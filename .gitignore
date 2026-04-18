@@ -5,6 +5,7 @@
 # ── Cache API ─────────────────────────────────────────────────────────────────
 # Migliaia di file JSON temporanei — pesanti e rigenerabili
 cache/
+output/images
 
 # ── Python ────────────────────────────────────────────────────────────────────
 .venv/

@@ -13,7 +13,7 @@ Apri: http://localhost:5000
 import sqlite3
 import argparse
 from pathlib import Path
-from flask import Flask, render_template_string, request, g, redirect
+from flask import Flask, render_template_string, request, g, redirect, send_from_directory
 from dotenv import load_dotenv
 import os
 
@@ -22,6 +22,7 @@ load_dotenv()
 ROOT       = Path(__file__).parent.parent
 DEX_DB     = ROOT / "output" / "dex.db"
 CARDS_DB   = ROOT / "output" / "cards.db"
+IMG_DIR    = ROOT / "output" / "images"
 
 app = Flask(__name__)
 
@@ -98,7 +99,11 @@ def fbadge(ft):
     colors = {"base":"#6c757d","mega":"#7b2fbe","gmax":"#e63946","regional":"#2a9d8f","other":"#b5943a"}
     return f'<span style="background:{colors.get(ft,"#aaa")};color:white;padding:1px 7px;border-radius:8px;font-size:.68rem">{labels.get(ft,ft)}</span>'
 
-app.jinja_env.globals.update(tbadge=tbadge, rbadge=rbadge, fbadge=fbadge)
+def imgurl(path):
+    if not path: return ""
+    return f"/img/{path}"
+
+app.jinja_env.globals.update(tbadge=tbadge, rbadge=rbadge, fbadge=fbadge, imgurl=imgurl)
 
 # ─── Template shell ───────────────────────────────────────────────────────────
 
@@ -295,7 +300,7 @@ def entries_list():
 <div class="row row-cols-2 row-cols-sm-3 row-cols-md-5 row-cols-lg-8 g-2">
 {% for e in rows %}<div class="col"><div class="entry-card"><a href="/entries/{{e.id}}">
   <div class="dex-num">#{{"%04d"|format(e.dn)}}</div>
-  {%if e.sprite_front%}<img src="{{e.sprite_front}}" class="sprite" onerror="this.style.display='none'">{%else%}<div class="no-sprite">?</div>{%endif%}
+  {%if e.sprite_front%}<img src="{{imgurl(e.sprite_front)}}" class="sprite" onerror="this.style.display='none'">{%else%}<div class="no-sprite">?</div>{%endif%}
   <div class="entry-name mt-1">{{e.name}}</div>
   <div class="mt-1">{{tbadge(e.type1)|safe}}{%if e.type2%} {{tbadge(e.type2)|safe}}{%endif%}</div>
   {%if e.form_type!='base'%}<div class="mt-1">{{fbadge(e.form_type)|safe}}</div>{%endif%}
@@ -336,8 +341,8 @@ def entry_detail(eid):
 <div class="row g-4">
 <div class="col-md-4">
   <div class="stat-card">
-    {%if e.sprite_official%}<img src="{{e.sprite_official}}" style="width:180px;height:180px;object-fit:contain">
-    {%elif e.sprite_front%}<img src="{{e.sprite_front}}" class="sprite" style="width:96px;height:96px">
+    {%if e.sprite_official%}<img src="{{imgurl(e.sprite_official)}}" style="width:180px;height:180px;object-fit:contain">
+    {%elif e.sprite_front%}<img src="{{imgurl(e.sprite_front)}}" class="sprite" style="width:96px;height:96px">
     {%else%}<div style="width:96px;height:96px;background:#f1f3f5;border-radius:10px;margin:0 auto;display:flex;align-items:center;justify-content:center;font-size:2.5rem;color:#ccc">?</div>{%endif%}
     <h4 class="mt-3 text-capitalize fw-bold">{{e.name}}</h4>
     <div class="text-muted mb-2">#{{"%04d"|format(e.dn)}} — {{e.gn}} ({{e.region}})</div>
@@ -350,8 +355,8 @@ def entry_detail(eid):
   <div class="mt-3 stat-card">
     <div class="fw-semibold mb-2 small">Sprite</div>
     <div class="d-flex gap-3 justify-content-center">
-      {%if e.sprite_front%}<div class="text-center"><img src="{{e.sprite_front}}" class="sprite"><div class="small text-muted">Normale</div></div>{%endif%}
-      {%if e.sprite_front_shiny%}<div class="text-center"><img src="{{e.sprite_front_shiny}}" class="sprite"><div class="small text-muted">Shiny</div></div>{%endif%}
+      {%if e.sprite_front%}<div class="text-center"><img src="{{imgurl(e.sprite_front)}}" class="sprite"><div class="small text-muted">Normale</div></div>{%endif%}
+      {%if e.sprite_front_shiny%}<div class="text-center"><img src="{{imgurl(e.sprite_front_shiny)}}" class="sprite"><div class="small text-muted">Shiny</div></div>{%endif%}
     </div>
   </div>{%endif%}
 </div>
@@ -361,7 +366,7 @@ def entry_detail(eid):
   <div class="row row-cols-3 row-cols-md-4 g-2 mb-4">
   {% for f in forms %}<div class="col"><div class="entry-card {%if f.id==e.id%}border border-2 border-dark{%endif%}">
     <a href="/entries/{{f.id}}">
-      {%if f.sprite_front%}<img src="{{f.sprite_front}}" class="sprite">{%else%}<div class="no-sprite">?</div>{%endif%}
+      {%if f.sprite_front%}<img src="{{imgurl(f.sprite_front)}}" class="sprite">{%else%}<div class="no-sprite">?</div>{%endif%}
       <div class="entry-name mt-1">{{f.form_name or 'base'}}</div>
       <div class="mt-1">{{fbadge(f.form_type)|safe}}</div>
     </a></div></div>{% endfor %}
@@ -446,7 +451,7 @@ def set_detail(set_id):
     <div class="row row-cols-2 row-cols-sm-3 row-cols-md-4 row-cols-lg-5 g-2">
     {% for c in card_rows %}<div class="col"><div class="card-thumb">
       <a href="/cards/{{c.id}}">
-        {%if c.image_small%}<img src="{{c.image_small}}" class="card-img" onerror="this.style.display='none'">{%else%}<div class="no-img">?</div>{%endif%}
+        {%if c.image_small%}<img src="{{imgurl(c.image_small)}}" class="card-img" onerror="this.style.display='none'">{%else%}<div class="no-img">?</div>{%endif%}
         <div style="font-size:.75rem;font-weight:600;margin-top:4px">{{c.name}}</div>
         <div style="font-size:.68rem;color:#888">#{{c.number}}</div>
         <div class="mt-1">{{rbadge(c.rarity)|safe}}</div>
@@ -511,7 +516,7 @@ def cards_list():
 <div class="row row-cols-2 row-cols-sm-3 row-cols-md-5 row-cols-lg-6 g-2">
 {% for c in rows %}<div class="col"><div class="card-thumb">
   <a href="/cards/{{c.id}}">
-    {%if c.image_small%}<img src="{{c.image_small}}" class="card-img" onerror="this.style.display='none'">{%else%}<div class="no-img">?</div>{%endif%}
+    {%if c.image_small%}<img src="{{imgurl(c.image_small)}}" class="card-img" onerror="this.style.display='none'">{%else%}<div class="no-img">?</div>{%endif%}
     <div style="font-size:.78rem;font-weight:600;margin-top:4px">{{c.name}}</div>
     <div style="font-size:.68rem;color:#888">{{c.sn}} #{{c.number}}</div>
     <div class="mt-1">{{rbadge(c.rarity)|safe}}</div>
@@ -545,8 +550,8 @@ def card_detail(card_id):
 </ol></nav>
 <div class="row g-4">
 <div class="col-md-4 col-lg-3">
-  {%if c.image_large%}<img src="{{c.image_large}}" style="width:100%;border-radius:12px" onerror="this.src='{{c.image_small}}'">
-  {%elif c.image_small%}<img src="{{c.image_small}}" style="width:100%;border-radius:12px">
+  {%if c.image_large%}<img src="{{imgurl(c.image_large)}}" style="width:100%;border-radius:12px" onerror="this.src='{{c.image_small}}'">
+  {%elif c.image_small%}<img src="{{imgurl(c.image_small)}}" style="width:100%;border-radius:12px">
   {%else%}<div style="height:300px;background:#f1f3f5;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:3rem;color:#ccc">?</div>{%endif%}
 </div>
 <div class="col-md-8 col-lg-9">
@@ -649,6 +654,13 @@ def debug_sql():
 """, sql=sql, result=result, error=error, columns=columns,
      db=target, dex_t=dex_tables, cards_t=cards_tables)
     return shell(t, "debug")
+
+# ─── Route immagini locali ───────────────────────────────────────────────────
+
+@app.route("/img/<path:filename>")
+def serve_image(filename):
+    """Serve le immagini dalla cartella output/images/ in modo sicuro."""
+    return send_from_directory(IMG_DIR, filename)
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 

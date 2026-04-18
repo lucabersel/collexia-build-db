@@ -1,7 +1,7 @@
 """
 dex/build_dex_db.py
 ===================
-Genera output/dex.db scaricando dati da PokeAPI (https://pokeapi.co).
+Genera output/dex.db e scarica le immagini in output/images/dex/.
 
 Tabelle:
   - generations  → generazioni di gioco
@@ -10,14 +10,19 @@ Tabelle:
   - species      → una riga per specie (es. #006)
   - creatures    → una riga per forma/variante (es. #006 forma mega-x)
 
+Le colonne sprite_* contengono percorsi relativi a output/
+(es. images/dex/front/6.png) invece di URL esterni.
+
 Usage:
-  python dex/build_dex_db.py              # Build con cache
+  python dex/build_dex_db.py              # Build completo con immagini
+  python dex/build_dex_db.py --limit 20   # Solo i primi N (test)
   python dex/build_dex_db.py --reset      # Cancella e ricostruisce
-  python dex/build_dex_db.py --no-cache   # Ignora la cache
-  python dex/build_dex_db.py --limit 151  # Solo i primi N (test)
+  python dex/build_dex_db.py --no-cache   # Ignora cache JSON
+  python dex/build_dex_db.py --skip-images  # Solo dati, niente immagini
 """
 
 import re
+import os
 import sqlite3
 import requests
 import json
@@ -25,13 +30,18 @@ import time
 import argparse
 from pathlib import Path
 from tqdm import tqdm
+from dotenv import load_dotenv
+
+# ── Env ───────────────────────────────────────────────────────────────────────
+load_dotenv()
 
 ROOT      = Path(__file__).parent.parent
 OUTPUT    = ROOT / "output"
 CACHE_DIR = ROOT / "cache" / "dex"
 DB_PATH   = OUTPUT / "dex.db"
+IMG_ROOT  = OUTPUT / "images" / "dex"
 API_BASE  = "https://pokeapi.co/api/v2"
-DELAY     = 0.05  # secondi tra richieste — aumenta se ricevi errori 429
+DELAY     = float(os.getenv("DEX_REQUEST_DELAY", "0.05"))
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -144,7 +154,7 @@ GEN_MAP = {
     "generation-vii": 7,  "generation-viii": 8, "generation-ix": 9,
 }
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers API ───────────────────────────────────────────────────────────────
 
 def safe_filename(url: str) -> str:
     key = url.replace(API_BASE, "").strip("/")
@@ -152,40 +162,75 @@ def safe_filename(url: str) -> str:
 
 
 def fetch(url: str, use_cache: bool = True) -> dict:
+    """GET JSON con cache su disco."""
     cache_file = CACHE_DIR / f"{safe_filename(url)}.json"
-
     if use_cache and cache_file.exists():
         return json.loads(cache_file.read_text(encoding="utf-8"))
-
     time.sleep(DELAY)
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
-
     if use_cache:
         cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-
     return data
 
+# ── Helpers immagini ──────────────────────────────────────────────────────────
+
+def download_image(url: str, dest: Path) -> bool:
+    """
+    Scarica un'immagine in dest.
+    Salta se il file esiste già (download incrementale).
+    Restituisce True se scaricata, False se già presente o URL nullo.
+    """
+    if not url:
+        return False
+    if dest.exists():
+        return False
+    try:
+        time.sleep(DELAY)
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(resp.content)
+        return True
+    except Exception as e:
+        tqdm.write(f"  img error {dest.name}: {e}")
+        return False
+
+
+def img_path(subfolder: str, creature_id: int, ext: str = "png") -> Path:
+    """Percorso locale assoluto per un'immagine del dex."""
+    return IMG_ROOT / subfolder / f"{creature_id}.{ext}"
+
+
+def img_rel(subfolder: str, creature_id: int, ext: str = "png") -> str:
+    """Percorso relativo a output/ — quello salvato nel DB."""
+    return f"images/dex/{subfolder}/{creature_id}.{ext}"
+
+# ── Form classifier ───────────────────────────────────────────────────────────
 
 def classify_form(form_name: str, is_default: bool) -> str:
     if not form_name or is_default:
         return "base"
     n = form_name.lower()
-    if "mega" in n:                             return "mega"
-    if "gmax" in n or "gigantamax" in n:        return "gmax"
-    if any(x in n for x in ("alola","alolan")): return "regional"
-    if any(x in n for x in ("galar","galarian")):return "regional"
-    if any(x in n for x in ("hisui","hisuian")): return "regional"
-    if any(x in n for x in ("paldea","paldean")):return "regional"
+    if "mega" in n:                              return "mega"
+    if "gmax" in n or "gigantamax" in n:         return "gmax"
+    if any(x in n for x in ("alola","alolan")):  return "regional"
+    if any(x in n for x in ("galar","galarian")): return "regional"
+    if any(x in n for x in ("hisui","hisuian")):  return "regional"
+    if any(x in n for x in ("paldea","paldean")): return "regional"
     return "other"
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
-def build(use_cache: bool = True, reset: bool = False, limit: int = None):
+def build(use_cache: bool = True, reset: bool = False,
+          limit: int = None, skip_images: bool = False):
 
     OUTPUT.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if not skip_images:
+        for sub in ("front", "shiny", "official"):
+            (IMG_ROOT / sub).mkdir(parents=True, exist_ok=True)
 
     if reset and DB_PATH.exists():
         DB_PATH.unlink()
@@ -197,12 +242,14 @@ def build(use_cache: bool = True, reset: bool = False, limit: int = None):
     cur.executescript(SCHEMA)
     conn.commit()
 
+    # 1. Dati statici
     print("\n[1/4] Generazioni e giochi...")
     cur.executemany("INSERT OR IGNORE INTO generations VALUES (?,?,?)", GENERATIONS)
     cur.executemany("INSERT OR IGNORE INTO games VALUES (?,?,?,?,?)", GAMES)
     conn.commit()
     print(f"      {len(GENERATIONS)} generazioni,  {len(GAMES)} giochi")
 
+    # 2. Tipi
     print("\n[2/4] Tipi elementali...")
     raw   = fetch(f"{API_BASE}/type?limit=100", use_cache)
     types = [
@@ -214,6 +261,7 @@ def build(use_cache: bool = True, reset: bool = False, limit: int = None):
     conn.commit()
     print(f"      {len(types)} tipi")
 
+    # 3. Lista specie
     print("\n[3/4] Lista specie...")
     all_species = fetch(f"{API_BASE}/pokemon-species?limit=2000", use_cache)["results"]
     if limit:
@@ -221,8 +269,9 @@ def build(use_cache: bool = True, reset: bool = False, limit: int = None):
         print(f"      Modalità test: {limit} entries")
     print(f"      {len(all_species)} specie\n")
 
-    print("[4/4] Build specie e varianti...")
-    species_ok, entries_ok, errors = 0, 0, []
+    # 4. Specie + varianti + immagini
+    print("[4/4] Build specie, varianti e immagini...")
+    species_ok, entries_ok, imgs_ok, errors = 0, 0, 0, []
 
     for item in tqdm(all_species, desc="Specie", unit="sp", ncols=80):
         try:
@@ -243,23 +292,55 @@ def build(use_cache: bool = True, reset: bool = False, limit: int = None):
                     type1     = t[0]["type"]["name"] if t else None
                     type2     = t[1]["type"]["name"] if len(t) > 1 else None
                     spr       = entry["sprites"]
+                    eid       = entry["id"]
+
                     raw_name  = entry["name"]
                     form_name = (raw_name.replace(sp["name"] + "-", "", 1)
                                  if raw_name != sp["name"] else "")
                     form_type = classify_form(form_name, variety["is_default"])
 
+                    # URL sorgente
+                    url_front    = spr.get("front_default")
+                    url_shiny    = spr.get("front_shiny")
+                    url_official = (spr.get("other", {})
+                                       .get("official-artwork", {})
+                                       .get("front_default"))
+
+                    if skip_images:
+                        # Salva i percorsi locali attesi anche senza scaricare
+                        local_front    = img_rel("front",    eid) if url_front    else None
+                        local_shiny    = img_rel("shiny",    eid) if url_shiny    else None
+                        local_official = img_rel("official", eid) if url_official else None
+                    else:
+                        # Scarica e costruisci percorsi locali
+                        local_front = local_shiny = local_official = None
+
+                        if url_front:
+                            p = img_path("front", eid)
+                            imgs_ok += download_image(url_front, p)
+                            local_front = img_rel("front", eid)
+
+                        if url_shiny:
+                            p = img_path("shiny", eid)
+                            imgs_ok += download_image(url_shiny, p)
+                            local_shiny = img_rel("shiny", eid)
+
+                        if url_official:
+                            ext = "png"
+                            p   = img_path("official", eid, ext)
+                            imgs_ok += download_image(url_official, p)
+                            local_official = img_rel("official", eid, ext)
+
                     cur.execute(
                         "INSERT OR REPLACE INTO creatures VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                         (
-                            entry["id"], sp["id"], entry["name"],
+                            eid, sp["id"], entry["name"],
                             form_name or None, form_type,
                             int(variety["is_default"]),
                             type1, type2,
-                            spr.get("front_default"),
-                            spr.get("front_shiny"),
-                            spr.get("other", {})
-                               .get("official-artwork", {})
-                               .get("front_default"),
+                            local_front,
+                            local_shiny,
+                            local_official,
                         ),
                     )
                     entries_ok += 1
@@ -281,20 +362,25 @@ def build(use_cache: bool = True, reset: bool = False, limit: int = None):
     print("\n" + "─" * 50)
     print("  DEX DB COMPLETATO")
     print("─" * 50)
-    print(f"  Output   : {DB_PATH}")
-    print(f"  Specie   : {species_ok}")
-    print(f"  Varianti : {entries_ok}")
-    print(f"  Errori   : {len(errors)}")
+    print(f"  Output     : {DB_PATH}")
+    print(f"  Specie     : {species_ok}")
+    print(f"  Varianti   : {entries_ok}")
+    if not skip_images:
+        print(f"  Immagini   : {imgs_ok} scaricate")
+        print(f"  Img path   : {IMG_ROOT}")
+    print(f"  Errori     : {len(errors)}")
     if errors:
         for e in errors: print(f"    {e}")
     print("─" * 50 + "\n")
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="Build dex.db")
-    p.add_argument("--reset",    action="store_true", help="Cancella e ricostruisce")
-    p.add_argument("--no-cache", action="store_true", help="Ignora la cache")
-    p.add_argument("--limit",    type=int, default=None, metavar="N",
+    p = argparse.ArgumentParser(description="Build dex.db con immagini locali")
+    p.add_argument("--reset",       action="store_true", help="Cancella e ricostruisce")
+    p.add_argument("--no-cache",    action="store_true", help="Ignora cache JSON")
+    p.add_argument("--skip-images", action="store_true", help="Salta il download immagini")
+    p.add_argument("--limit",       type=int, default=None, metavar="N",
                    help="Solo i primi N specie (test)")
     a = p.parse_args()
-    build(use_cache=not a.no_cache, reset=a.reset, limit=a.limit)
+    build(use_cache=not a.no_cache, reset=a.reset,
+          limit=a.limit, skip_images=a.skip_images)
