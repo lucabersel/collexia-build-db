@@ -1,0 +1,34 @@
+# ── Segreti ───────────────────────────────────────────────────────────────────
+# .env contiene chiavi API — non va mai committato
+.env
+
+# ── Cache API ─────────────────────────────────────────────────────────────────
+# Migliaia di file JSON temporanei — pesanti e rigenerabili
+cache/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editor ────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── NOTE ──────────────────────────────────────────────────────────────────────
+# output/ NON è ignorato: i DB generati (dex.db, cards.db) vengono committati
+# perché sono gli artefatti distribuiti con l'app Collexia.
+# Rigenera con:  python dex/build_dex_db.py --reset
+#                python cards/build_cards_db.py --reset
