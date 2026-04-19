@@ -13,6 +13,7 @@ Tabelle:
   - types        → tipi elementali
   - species      → una riga per specie (es. #006)
   - creatures    → una riga per forma/variante (es. #006 forma mega-x)
+  - game_species → quali specie appaiono in quale gioco (da pokedex regionale)
 
 Usage:
   python dex/build_dex_db.py                        # Solo dati + URL
@@ -59,9 +60,6 @@ def _on_signal(sig, frame):
 signal.signal(signal.SIGTERM, _on_signal)
 
 # ── Schema ────────────────────────────────────────────────────────────────────
-# Ogni immagine ha due colonne:
-#   sprite_*      → percorso locale relativo a output/  (NULL se non scaricato)
-#   sprite_*_url  → URL originale                       (sempre presente)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS generations (
@@ -111,8 +109,17 @@ CREATE TABLE IF NOT EXISTS creatures (
     FOREIGN KEY (species_id) REFERENCES species(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_creatures_species ON creatures(species_id);
+CREATE TABLE IF NOT EXISTS game_species (
+    game_id    INTEGER NOT NULL,
+    species_id INTEGER NOT NULL,
+    PRIMARY KEY (game_id, species_id),
+    FOREIGN KEY (game_id)    REFERENCES games(id),
+    FOREIGN KEY (species_id) REFERENCES species(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_creatures_species  ON creatures(species_id);
 CREATE INDEX IF NOT EXISTS idx_species_generation ON species(generation_id);
+CREATE INDEX IF NOT EXISTS idx_game_species_game  ON game_species(game_id);
 """
 
 # ── Dati statici ──────────────────────────────────────────────────────────────
@@ -175,6 +182,56 @@ GEN_MAP = {
     "generation-vii": 7,  "generation-viii": 8, "generation-ix": 9,
 }
 
+# ── Mappa gioco → pokédex regionali PokeAPI ───────────────────────────────────
+#
+# Ogni gioco può avere uno o più pokédex regionali su PokeAPI.
+# Per X/Y ci sono 3 pokédex separati (central, coastal, mountain).
+# Per Sword/Shield includiamo i DLC (isle-of-armor, crown-tundra).
+# Per Scarlet/Violet includiamo i DLC (kitakami, blueberry).
+# FireRed/LeafGreen usano il pokédex di Kanto ma con accesso a Johto post-game:
+#   usiamo "kanto" che copre i 151 base; il post-game Johto
+#   è coperto da chi seleziona entrambi i giochi.
+
+GAME_POKEDEX_MAP: dict[int, list[str]] = {
+    1:  ["kanto"],                                          # Red
+    2:  ["kanto"],                                          # Blue
+    3:  ["kanto"],                                          # Yellow
+    4:  ["original-johto"],                                 # Gold
+    5:  ["original-johto"],                                 # Silver
+    6:  ["original-johto"],                                 # Crystal
+    7:  ["hoenn"],                                          # Ruby
+    8:  ["hoenn"],                                          # Sapphire
+    9:  ["kanto"],                                          # FireRed
+    10: ["kanto"],                                          # LeafGreen
+    11: ["hoenn"],                                          # Emerald
+    12: ["original-sinnoh"],                                # Diamond
+    13: ["original-sinnoh"],                                # Pearl
+    14: ["extended-sinnoh"],                                # Platinum (più specie di D/P)
+    15: ["updated-johto"],                                  # HeartGold
+    16: ["updated-johto"],                                  # SoulSilver
+    17: ["original-unova"],                                 # Black
+    18: ["original-unova"],                                 # White
+    19: ["updated-unova"],                                  # Black 2
+    20: ["updated-unova"],                                  # White 2
+    21: ["kalos-central", "kalos-coastal", "kalos-mountain"], # X
+    22: ["kalos-central", "kalos-coastal", "kalos-mountain"], # Y
+    23: ["updated-hoenn"],                                  # Omega Ruby
+    24: ["updated-hoenn"],                                  # Alpha Sapphire
+    25: ["original-alola"],                                 # Sun
+    26: ["original-alola"],                                 # Moon
+    27: ["updated-alola"],                                  # Ultra Sun
+    28: ["updated-alola"],                                  # Ultra Moon
+    29: ["letsgo-kanto"],                                   # Let's Go Pikachu
+    30: ["letsgo-kanto"],                                   # Let's Go Eevee
+    31: ["galar", "isle-of-armor", "crown-tundra"],         # Sword (+ DLC)
+    32: ["galar", "isle-of-armor", "crown-tundra"],         # Shield (+ DLC)
+    33: ["original-sinnoh"],                                # Brilliant Diamond
+    34: ["original-sinnoh"],                                # Shining Pearl
+    35: ["hisui"],                                          # Legends: Arceus
+    36: ["paldea", "kitakami", "blueberry"],                # Scarlet (+ DLC)
+    37: ["paldea", "kitakami", "blueberry"],                # Violet (+ DLC)
+}
+
 # ── Helpers API ───────────────────────────────────────────────────────────────
 
 def safe_filename(url: str) -> str:
@@ -197,10 +254,6 @@ def fetch(url: str, use_cache: bool = True) -> dict:
 # ── Helpers immagini ──────────────────────────────────────────────────────────
 
 def download_image(url: str, dest: Path) -> bool:
-    """
-    Scarica un'immagine. Salta se già presente.
-    Restituisce True se scaricata ora, False se già esisteva o URL nullo.
-    """
     if not url or dest.exists():
         return False
     try:
@@ -216,12 +269,10 @@ def download_image(url: str, dest: Path) -> bool:
 
 
 def img_local_path(subfolder: str, creature_id: int) -> Path:
-    """Percorso assoluto sul disco."""
     return IMG_ROOT / subfolder / f"{creature_id}.png"
 
 
 def img_local_rel(subfolder: str, creature_id: int) -> str:
-    """Percorso relativo a output/ — salvato nel DB."""
     return f"images/dex/{subfolder}/{creature_id}.png"
 
 # ── Form classifier ───────────────────────────────────────────────────────────
@@ -240,20 +291,21 @@ def classify_form(form_name: str, is_default: bool) -> str:
 
 # ── Riepilogo ─────────────────────────────────────────────────────────────────
 
-def print_summary(species_ok, entries_ok, imgs_ok, errors,
-                  download_images, interrupted):
+def print_summary(species_ok, entries_ok, game_species_ok, imgs_ok,
+                  errors, download_images, interrupted):
     status = "INTERROTTO" if interrupted else "COMPLETATO"
     print("\n" + "─" * 50)
     print(f"  DEX DB {status}")
     print("─" * 50)
-    print(f"  Output     : {DB_PATH}")
-    print(f"  Specie     : {species_ok}")
-    print(f"  Varianti   : {entries_ok}")
+    print(f"  Output          : {DB_PATH}")
+    print(f"  Specie          : {species_ok}")
+    print(f"  Varianti        : {entries_ok}")
+    print(f"  Mapping giochi  : {game_species_ok} righe in game_species")
     if download_images:
-        print(f"  Immagini   : {imgs_ok} scaricate in {IMG_ROOT}")
+        print(f"  Immagini        : {imgs_ok} scaricate in {IMG_ROOT}")
     else:
-        print(f"  Immagini   : solo URL salvati (usa --download-images per scaricare)")
-    print(f"  Errori     : {len(errors)}")
+        print(f"  Immagini        : solo URL salvati (usa --download-images)")
+    print(f"  Errori          : {len(errors)}")
     if errors:
         for e in errors:
             print(f"    {e}")
@@ -284,17 +336,19 @@ def build(use_cache: bool = True, reset: bool = False,
     cur.executescript(SCHEMA)
     conn.commit()
 
-    species_ok = entries_ok = imgs_ok = 0
+    species_ok = entries_ok = game_species_ok = imgs_ok = 0
     errors: list[str] = []
 
     try:
-        print("\n[1/4] Generazioni e giochi...")
+        # ── Step 1: dati statici ──────────────────────────────────────────────
+        print("\n[1/5] Generazioni e giochi...")
         cur.executemany("INSERT OR IGNORE INTO generations VALUES (?,?,?)", GENERATIONS)
         cur.executemany("INSERT OR IGNORE INTO games VALUES (?,?,?,?,?)", GAMES)
         conn.commit()
         print(f"      {len(GENERATIONS)} generazioni,  {len(GAMES)} giochi")
 
-        print("\n[2/4] Tipi elementali...")
+        # ── Step 2: tipi ──────────────────────────────────────────────────────
+        print("\n[2/5] Tipi elementali...")
         raw   = fetch(f"{API_BASE}/type?limit=100", use_cache)
         types = [
             (i + 1, t["name"])
@@ -305,15 +359,15 @@ def build(use_cache: bool = True, reset: bool = False,
         conn.commit()
         print(f"      {len(types)} tipi")
 
-        print("\n[3/4] Lista specie...")
+        # ── Step 3: specie + varianti ─────────────────────────────────────────
+        print("\n[3/5] Lista specie...")
         all_species = fetch(f"{API_BASE}/pokemon-species?limit=2000", use_cache)["results"]
         if limit:
             all_species = all_species[:limit]
             print(f"      Modalità test: {limit} entries")
         print(f"      {len(all_species)} specie\n")
 
-        print("[4/4] Build specie e varianti...")
-
+        print("[3/5] Build specie e varianti...")
         for item in tqdm(all_species, desc="Specie", unit="sp", ncols=80):
             if _stop:
                 tqdm.write("\n  Stop richiesto — concludo l'entry corrente...")
@@ -344,30 +398,25 @@ def build(use_cache: bool = True, reset: bool = False,
                                      if raw_name != sp["name"] else "")
                         form_type = classify_form(form_name, variety["is_default"])
 
-                        # URL originali — salvati sempre
                         url_front    = spr.get("front_default")
                         url_shiny    = spr.get("front_shiny")
                         url_official = (spr.get("other", {})
                                            .get("official-artwork", {})
                                            .get("front_default"))
 
-                        # Percorsi locali — popolati solo se si scarica
                         local_front = local_shiny = local_official = None
 
                         if download_images:
                             if url_front:
                                 p = img_local_path("front", eid)
                                 imgs_ok += download_image(url_front, p)
-                                # Il percorso locale è valido solo se il file esiste
                                 if p.exists():
                                     local_front = img_local_rel("front", eid)
-
                             if url_shiny:
                                 p = img_local_path("shiny", eid)
                                 imgs_ok += download_image(url_shiny, p)
                                 if p.exists():
                                     local_shiny = img_local_rel("shiny", eid)
-
                             if url_official:
                                 p = img_local_path("official", eid)
                                 imgs_ok += download_image(url_official, p)
@@ -401,6 +450,53 @@ def build(use_cache: bool = True, reset: bool = False,
                 errors.append(msg)
                 tqdm.write(msg)
 
+        if _stop:
+            return False
+
+        # ── Step 4: game_species — chi appare in quale gioco ──────────────────
+        print("\n[4/5] Mapping specie per gioco (pokédex regionali)...")
+
+        # Recupera tutti gli species_id presenti nel DB (per filtrare quelli
+        # che non abbiamo ancora — es. in modalità --limit)
+        known_species = {
+            row[0] for row in cur.execute("SELECT id FROM species").fetchall()
+        }
+
+        for game_id, pokedex_names in tqdm(
+            GAME_POKEDEX_MAP.items(), desc="Giochi", unit="game", ncols=80
+        ):
+            if _stop:
+                break
+
+            species_for_game: set[int] = set()
+
+            for dex_name in pokedex_names:
+                try:
+                    dex_data = fetch(f"{API_BASE}/pokedex/{dex_name}", use_cache)
+                    for entry in dex_data.get("pokemon_entries", []):
+                        # L'URL della specie contiene l'ID come ultimo segmento
+                        url = entry["pokemon_species"]["url"]
+                        species_id = int(url.rstrip("/").split("/")[-1])
+                        if species_id in known_species:
+                            species_for_game.add(species_id)
+                except Exception as e:
+                    msg = f"  pokédex '{dex_name}' (game {game_id}): {e}"
+                    errors.append(msg)
+                    tqdm.write(msg)
+
+            rows = [(game_id, sid) for sid in species_for_game]
+            cur.executemany(
+                "INSERT OR IGNORE INTO game_species VALUES (?,?)", rows
+            )
+            game_species_ok += len(rows)
+            conn.commit()
+
+        # ── Step 5: indici finali ─────────────────────────────────────────────
+        print("\n[5/5] Indici finali...")
+        conn.execute("ANALYZE")
+        conn.commit()
+        print("      Fatto.")
+
     except KeyboardInterrupt:
         _stop = True
         print("\n  Ctrl+C ricevuto.")
@@ -411,8 +507,8 @@ def build(use_cache: bool = True, reset: bool = False,
         except Exception:
             pass
         conn.close()
-        print_summary(species_ok, entries_ok, imgs_ok, errors,
-                      download_images, _stop)
+        print_summary(species_ok, entries_ok, game_species_ok, imgs_ok,
+                      errors, download_images, _stop)
 
     return not _stop
 
